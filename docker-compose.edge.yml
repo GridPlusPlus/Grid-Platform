@@ -3,7 +3,7 @@ services:
     networks:
       default: {}
       edge:
-        aliases: [grid-platform]
+        aliases: [gridplusplus]
 
 networks:
   edge:

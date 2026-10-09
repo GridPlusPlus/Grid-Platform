@@ -139,6 +139,8 @@ Schema 變更流程：
 
 ## Docker 部署
 
+若從舊版更新，先在本專案目錄執行 `docker compose -p grid-platform down`，再依下列步驟啟動。Compose 固定沿用舊版 SQLite volume 名稱；切換時不得使用 `down -v`。
+
 本節是伺服器部署 SOP。Compose 內含前端 nginx、FastAPI 與 SQLite；前端 nginx 提供 `app/static/`，其餘請求反代到 FastAPI。SQLite 資料存放在 Docker volume，應用程式啟動時會自動執行 `alembic upgrade head`。
 
 Compose 預設不對宿主機發布 port。若要讓外部使用者連線，必須依下列步驟接到伺服器既有的外層 nginx。
@@ -197,7 +199,7 @@ docker network inspect nginx
    client_max_body_size 6m;
 
    location / {
-       proxy_pass http://grid-platform:80;
+       proxy_pass http://gridplusplus:80;
        proxy_set_header Host $host;
        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
        proxy_set_header X-Forwarded-Proto $scheme;
@@ -206,7 +208,7 @@ docker network inspect nginx
 
 3. 檢查 nginx 設定語法，確認成功後再依伺服器原有方式 reload nginx。
 
-`grid-platform` 是此服務在外部 network 上的固定別名，與 Compose 專案名稱無關。
+`gridplusplus` 是 Compose 專案名稱與此服務在外部 network 上的固定別名，對應 `https://gridplusplus.ntuee.org/`。
 
 ### 四、啟動服務
 
