@@ -4,11 +4,10 @@ import io
 
 from PIL import Image
 
-from tests.helpers import auth, image_bytes, login, register, upload_sprite
+from tests.helpers import auth, image_bytes, login, upload_sprite
 
 
 def setup_user(client):
-    register(client)
     return login(client)
 
 
@@ -238,7 +237,6 @@ def test_multi_tag_and_or_search(client):
 def test_only_owner_can_delete_sprite(client):
     token = setup_user(client)
     sprite = upload_sprite(client, token, "owned").json()
-    register(client, "other@example.com")
     other = login(client, "other@example.com")
     forbidden = client.delete(f"/sprites/{sprite['id']}", headers=auth(other))
     assert forbidden.status_code == 403

@@ -26,6 +26,7 @@ services:
       DATABASE_URL: sqlite:////data/grid_platform.db
     volumes:
       - grid_data:/data
+      - grid_oauth_config:/run/grid-oauth:ro
     healthcheck:
       test:
         [
@@ -41,3 +42,6 @@ services:
 
 volumes:
   grid_data:
+  grid_oauth_config:
+    external: true
+    name: grid_oauth_config

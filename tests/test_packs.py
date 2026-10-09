@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import sqlite3
 
-from tests.helpers import auth, login, register, upload_sprite
+from tests.helpers import auth, login, upload_sprite
 
 
 def setup_sprites(client):
-    register(client)
     token = login(client)
     sprites = [
         upload_sprite(client, token, name, "character").json()
@@ -95,7 +94,6 @@ def test_empty_patch_is_400_and_non_owner_is_forbidden(client):
     empty = client.patch(f"/packs/{pack['id']}", headers=auth(token), json={})
     assert empty.status_code == 400
 
-    register(client, "other@example.com")
     other = login(client, "other@example.com")
     forbidden = client.patch(
         f"/packs/{pack['id']}", headers=auth(other), json={"name": "stolen"}

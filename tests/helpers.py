@@ -1,27 +1,42 @@
 from __future__ import annotations
 
 import io
+import base64
+import hashlib
+import json
+from urllib.parse import parse_qs, urlparse
 
 from PIL import Image
 
 
-def register(
+def login(
     client,
     email: str = "user@example.com",
     password: str = "password123",
     username: str | None = None,
 ):
-    public_name = username or email.strip().split("@", 1)[0]
-    return client.post(
-        "/auth/register",
-        json={"username": public_name, "email": email, "password": password},
+    del password
+    normalized_email = email.strip().lower()
+    profile = {
+        "sub": hashlib.sha256(normalized_email.encode()).hexdigest()[:20],
+        "preferred_username": username or normalized_email.split("@", 1)[0],
+        "email": normalized_email,
+    }
+    encoded_profile = base64.urlsafe_b64encode(
+        json.dumps(profile).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+
+    start = client.get("/auth/gitea/login", follow_redirects=False)
+    assert start.status_code == 307, start.text
+    state = parse_qs(urlparse(start.headers["location"]).query)["state"][0]
+    callback = client.get(
+        "/auth/gitea/callback",
+        params={"code": encoded_profile, "state": state},
+        follow_redirects=False,
     )
-
-
-def login(client, email: str = "user@example.com", password: str = "password123"):
-    response = client.post("/auth/login", json={"email": email, "password": password})
-    assert response.status_code == 200, response.text
-    return response.json()["access_token"]
+    assert callback.status_code == 303, callback.text
+    fragment = parse_qs(urlparse(callback.headers["location"]).fragment)
+    return fragment["access_token"][0]
 
 
 def auth(token: str) -> dict[str, str]:

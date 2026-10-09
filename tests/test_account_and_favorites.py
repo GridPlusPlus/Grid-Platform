@@ -3,12 +3,11 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.models import FavoriteFolderSprite, Sprite
-from tests.helpers import auth, login, register, upload_sprite
+from tests.helpers import auth, login, upload_sprite
 
 
 def setup_account(client, email="owner@example.com", username="owner"):
-    assert register(client, email=email, username=username).status_code == 201
-    return login(client, email=email)
+    return login(client, email=email, username=username)
 
 
 def test_profile_update_and_mine_sprites(client):

@@ -5,7 +5,17 @@ import os
 os.environ.setdefault("JWT_SECRET", "test-secret-that-is-at-least-thirty-two-bytes")
 os.environ.setdefault("CORS_ORIGINS", "http://localhost:5500")
 os.environ.setdefault("DATABASE_URL", "sqlite://")
+os.environ.setdefault("GITEA_INTERNAL_URL", "http://gitea:3000")
+os.environ.setdefault("GITEA_PUBLIC_URL", "http://gitea.test")
+os.environ.setdefault("GITEA_OAUTH_CLIENT_ID", "test-client")
+os.environ.setdefault("GITEA_OAUTH_CLIENT_SECRET", "test-secret")
+os.environ.setdefault(
+    "GITEA_OAUTH_REDIRECT_URI", "http://platform.test/auth/gitea/callback"
+)
+os.environ.setdefault("OAUTH_COOKIE_SECURE", "false")
 
+import base64
+import json
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
@@ -13,6 +23,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
+from app import gitea_oauth
 from app.main import app
 
 
@@ -51,9 +62,24 @@ def clean_database():
     yield
 
 
+@pytest.fixture(autouse=True)
+def fake_gitea(monkeypatch):
+    monkeypatch.setattr(gitea_oauth, "exchange_code", lambda code: code)
+
+    def fake_userinfo(encoded_profile: str):
+        padding = "=" * (-len(encoded_profile) % 4)
+        return json.loads(base64.urlsafe_b64decode(encoded_profile + padding))
+
+    monkeypatch.setattr(gitea_oauth, "fetch_userinfo", fake_userinfo)
+
+
 @pytest.fixture
 def client():
-    with TestClient(app, raise_server_exceptions=False) as test_client:
+    with TestClient(
+        app,
+        base_url="http://platform.test",
+        raise_server_exceptions=False,
+    ) as test_client:
         yield test_client
 
 

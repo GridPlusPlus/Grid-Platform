@@ -4,7 +4,7 @@
 
 核心功能：
 
-- 帳號註冊、登入、登出與個人資料管理
+- Gitea OAuth2/OIDC 單一登入、登出與個人資料管理
 - 32×32 RGBA8888 素材上傳、預覽、搜尋與刪除
 - 私人收藏資料夾
 - 素材包編排與 Grid++ `assets.db` 匯出
@@ -28,7 +28,8 @@ app/
 ├── schemas.py           # API 回應模型
 ├── validation.py        # 請求驗證與正規化
 ├── image_processing.py  # 32×32 RGBA 圖片處理
-├── security.py          # 密碼雜湊與 JWT
+├── security.py          # 平台 JWT
+├── gitea_oauth.py       # Gitea OAuth2/OIDC client
 ├── config.py            # 環境設定
 ├── database.py          # Engine、Session 與 FastAPI dependency
 └── static/              # 內建前端
@@ -74,13 +75,30 @@ Copy-Item .env.example .env
 python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-將結果填入 `.env` 的 `JWT_SECRET`。可用設定如下：
+將結果填入 `.env` 的 `JWT_SECRET`。Docker 部署時，Gitea repo 的 `oauth-init` 會自動
+建立 confidential OAuth2 application，並把憑證寫入 `grid_oauth_config` named volume；
+本服務唯讀掛載該 volume，因此不需進 Gitea UI 手動設定，也不需把 Client Secret
+放進此 repo。
+
+可用設定如下：
 
 - `JWT_SECRET`：必填，至少 32 bytes；用於簽署一小時有效的 access token。
 - `DATABASE_URL`：選填；預設為專案根目錄的 `grid_platform.db`。
 - `CORS_ORIGINS`：選填；外部前端的允許來源，以逗號分隔，不接受 `*`。使用內建前端時不需設定。
+- `GITEA_OAUTH_CONFIG_FILE`：Docker 預設為 `/run/grid-oauth/client.json`，由 Gitea 自動產生。
+- `GITEA_INTERNAL_URL`、`GITEA_PUBLIC_URL`、`GITEA_OAUTH_CLIENT_ID`、`GITEA_OAUTH_CLIENT_SECRET`、`GITEA_OAUTH_REDIRECT_URI`：只在不使用自動 provisioning 時設定，且優先於設定檔。
+- `OAUTH_COOKIE_SECURE`：選填；正式 HTTPS 應為 `true`，預設依 Redirect URI 判斷。
 
-行程環境變數的優先度高於 `.env`，部署環境應直接由平台注入設定。
+Gitea 自己的 `GITEA_ROOT_URL` 必須設定成同一個瀏覽器可達的公開網址；容器間
+仍透過 `GITEA_INTERNAL_URL` 通訊；正式環境使用 nginx network 上的
+`http://gridplusplus-git:3000`，不要把內部網址當公開網址。
+
+登入要求的 scope 僅為 `read:user`。第一次登入會以 Gitea 的固定使用者
+ID 建立平台身分；若資料庫已有相同 Email 的舊帳號，會自動連結該帳號以保留素材、
+素材包與收藏資料。本機密碼註冊與登入端點不再提供。
+
+行程環境變數的優先度高於 OAuth 設定檔與 `.env`。本機直接執行 Uvicorn、不使用
+Docker named volume 時，才需要自行提供上述五個覆寫值。
 
 ### 3. 建立資料庫並啟動
 
@@ -89,8 +107,8 @@ alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
-- Web UI：<http://127.0.0.1:8000/>
-- OpenAPI：<http://127.0.0.1:8000/docs>
+- Web UI：<http://localhost:8000/>
+- OpenAPI：<http://localhost:8000/docs>
 
 ## 開發指令
 
@@ -179,11 +197,33 @@ docker network inspect nginx
 
 3. 編輯 `.env`，將產生的值填入 `JWT_SECRET`，不要將 `.env` 提交到版本庫。
 
-4. 若只需要讓容器彼此連線，不需修改其他設定，可直接進行「四、啟動服務」。此模式不發布宿主機 port，因此無法從宿主機或外部網路直接連線。
-
-5. 若要接到外層 nginx，在 `.env` 取消註解並填入：
+4. 先部署 Gitea repo，確認 `oauth-init` 成功且外部 volume 已建立：
 
    ```bash
+   docker volume inspect grid_oauth_config
+   ```
+
+5. 若只需要讓容器彼此連線，不需修改其他設定，可直接進行「四、啟動服務」。此模式不發布宿主機 port，因此無法從宿主機或外部網路直接連線。
+
+6. 若要接到外層 nginx，在 `.env` 取消註解並填入：
+
+   Windows 本機開發 `.env`：
+
+   ```env
+   COMPOSE_FILE=docker-compose.yml;docker-compose.edge.yml;docker-compose.dev.yml
+   EDGE_NETWORK=nginx
+   ```
+
+   Linux 本機開發 `.env`：
+
+   ```env
+   COMPOSE_FILE=docker-compose.yml:docker-compose.edge.yml:docker-compose.dev.yml
+   EDGE_NETWORK=nginx
+   ```
+
+   Linux 正式環境不發布開發用的 `8000` port：
+
+   ```env
    COMPOSE_FILE=docker-compose.yml:docker-compose.edge.yml
    EDGE_NETWORK=nginx
    ```
@@ -245,14 +285,11 @@ docker network inspect nginx
    ```
 
 2. 已設定外層 nginx 時，再以實際網域開啟首頁與 `/docs`。
-3. 建立第一個使用者帳號：
-   - 開啟首頁的「帳號」。
-   - 在登入畫面選擇「點此註冊」。
-   - 填入公開使用者名稱、Email，以及 8 至 128 個字元的密碼。
-   - 按下「建立帳號並登入」。
-4. 登出後以相同 Email 與密碼重新登入，並至少讀取一次既有資料。
+3. 開啟首頁「帳號」，按下「前往 Gitea 登入」。
+4. 在 Gitea 完成登入及第一次授權，確認能回到平台並讀取帳號資料。
+5. 登出後再次登入，確認仍連結到同一個平台帳號與既有資料。
 
-部署程序不會自動建立預設帳號或管理員。現行 `/auth/register` 是公開註冊端點，所有可連到網站的訪客都能建立一般帳號；系統目前沒有管理員角色。
+平台不提供自行註冊或密碼登入；帳號生命週期一律由 Gitea 管理。
 
 ### 六、更新或停止服務
 

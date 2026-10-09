@@ -26,6 +26,7 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    gitea_user_id: Mapped[str | None] = mapped_column(Text, unique=True, nullable=True)
     username: Mapped[str] = mapped_column(Text(collation="NOCASE"), unique=True, nullable=False)
     email: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)

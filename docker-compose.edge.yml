@@ -4,6 +4,10 @@ services:
       default: {}
       edge:
         aliases: [gridplusplus]
+  app:
+    networks:
+      default: {}
+      edge: {}
 
 networks:
   edge:

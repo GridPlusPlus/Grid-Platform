@@ -93,14 +93,12 @@
 
     <section id="account-view" class="view">
       <div id="account-login" class="account-layout">
-        <form id="login-form" class="panel">
-          <p class="eyebrow">WELCOME BACK</p>
-          <h2>登入</h2>
-          <label>Email<input name="email" type="email" autocomplete="email" required></label>
-          <label>密碼<input name="password" type="password" autocomplete="current-password" required></label>
-          <button class="button primary" type="submit">登入</button>
-          <p class="auth-switch">沒有帳號？<button id="show-register" class="text-button" type="button">點此註冊</button></p>
-        </form>
+        <div class="panel">
+          <p class="eyebrow">SINGLE SIGN-ON</p>
+          <h2>使用 Gitea 登入</h2>
+          <p>Grid++ 素材平台使用與程式碼平台相同的帳號。</p>
+          <a class="button primary" href="/auth/gitea/login">前往 Gitea 登入</a>
+        </div>
       </div>
       <div id="account-dashboard" class="account-dashboard hidden">
         <div class="account-header">
@@ -171,19 +169,6 @@
       </div>
     </section>
 
-    <section id="register-view" class="view">
-      <div class="account-layout">
-        <form id="register-form" class="panel">
-          <p class="eyebrow">NEW ACCOUNT</p>
-          <h2>註冊</h2>
-          <label>公開使用者名稱<input name="username" autocomplete="username" required></label>
-          <label>Email<input name="email" type="email" autocomplete="email" required></label>
-          <label>密碼<input name="password" type="password" autocomplete="new-password" required></label>
-          <button class="button primary" type="submit">建立帳號並登入</button>
-          <p class="auth-switch">已經有帳號？<button id="show-login" class="text-button" type="button">返回登入</button></p>
-        </form>
-      </div>
-    </section>
   </main>
 
   <!-- Editing and preview dialogs -->

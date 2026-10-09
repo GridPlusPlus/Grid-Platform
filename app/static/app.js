@@ -1,5 +1,19 @@
 "use strict";
 
+const oauthResult = new URLSearchParams(window.location.hash.slice(1));
+const oauthToken = oauthResult.get("auth") === "gitea" ? oauthResult.get("access_token") : null;
+const oauthError = oauthResult.get("auth_error");
+if (oauthToken) {
+  const segment = oauthToken.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+  const payload = JSON.parse(atob(segment.padEnd(Math.ceil(segment.length / 4) * 4, "=")));
+  sessionStorage.setItem("grid_token", oauthToken);
+  sessionStorage.setItem("grid_user_id", String(Number(payload.sub)));
+  sessionStorage.removeItem("grid_email");
+  history.replaceState(null, "", `${location.pathname}${location.search}`);
+} else if (oauthError) {
+  history.replaceState(null, "", `${location.pathname}${location.search}`);
+}
+
 const state = {
   token: sessionStorage.getItem("grid_token"),
   userId: Number(sessionStorage.getItem("grid_user_id")) || null,
@@ -930,8 +944,6 @@ $$(".account-tab").forEach((tab) => {
   tab.addEventListener("click", () => switchAccountSection(tab.dataset.accountView));
 });
 $("#theme-toggle").addEventListener("click", toggleTheme);
-$("#show-register").addEventListener("click", () => switchView("register"));
-$("#show-login").addEventListener("click", () => switchView("account"));
 $("#favorite-heart").addEventListener("click", openFavoritePicker);
 
 $("#sprite-filter").addEventListener("submit", (event) => { event.preventDefault(); state.spritePage = 1; loadSprites(); });
@@ -1023,53 +1035,6 @@ $("#editor-folder-select").addEventListener("change", (event) => {
   $("#editor-search").value = "";
   state.editorLibrary = [];
   renderLibrary();
-});
-
-$("#register-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const formElement = event.currentTarget;
-  const form = new FormData(formElement);
-  try {
-    const credentials = {
-      username: form.get("username"),
-      email: form.get("email"),
-      password: form.get("password"),
-    };
-    await api("/auth/register", {
-      method: "POST",
-      body: JSON.stringify(credentials),
-    });
-    const data = await api("/auth/login", {
-      method: "POST",
-      body: JSON.stringify({email: credentials.email, password: credentials.password}),
-    });
-    const segment = data.access_token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
-    const payload = JSON.parse(atob(segment.padEnd(Math.ceil(segment.length / 4) * 4, "=")));
-    setSession(
-      data.access_token,
-      Number(payload.sub),
-      credentials.email.trim().toLowerCase(),
-    );
-    formElement.reset();
-    notify("註冊成功，已自動登入");
-    switchView("sprites");
-  } catch (error) { notify(error.message, true); }
-});
-
-$("#login-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const formElement = event.currentTarget;
-  const form = new FormData(formElement);
-  try {
-    const credentials = {email: form.get("email"), password: form.get("password")};
-    const data = await api("/auth/login", {method: "POST", body: JSON.stringify(credentials)});
-    const segment = data.access_token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
-    const payload = JSON.parse(atob(segment.padEnd(Math.ceil(segment.length / 4) * 4, "=")));
-    setSession(data.access_token, Number(payload.sub), credentials.email.trim().toLowerCase());
-    formElement.reset();
-    notify("登入成功");
-    switchView("sprites");
-  } catch (error) { notify(error.message, true); }
 });
 
 $("#logout-button").addEventListener("click", async () => {
@@ -1239,3 +1204,19 @@ renderSession();
 renderAccountAuthState();
 renderTheme();
 loadSprites();
+
+if (oauthToken) {
+  api("/users/me", {}, true)
+    .then((me) => {
+      state.me = me;
+      setSession(oauthToken, me.id, me.email);
+      notify("已透過 Gitea 登入");
+      switchView("sprites");
+    })
+    .catch((error) => {
+      setSession(null, null, null);
+      notify(error.message, true);
+    });
+} else if (oauthError) {
+  notify("Gitea 登入未完成，請再試一次", true);
+}

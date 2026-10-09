@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import sqlite3
@@ -9,12 +10,12 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import ulid
 from fastapi import Depends, FastAPI, File, Form, Query, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -23,6 +24,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.config import PROJECT_ROOT, get_settings
 from app.database import get_db
 from app.errors import ApiError, install_exception_handlers, validation_detail
+from app import gitea_oauth
 from app.image_processing import process_upload
 from app.models import Pack, PackSprite, Sprite, User
 from app.schemas import (
@@ -35,25 +37,19 @@ from app.schemas import (
     PublicUser,
     SpriteListResponse,
     SpriteResponse,
-    TokenResponse,
 )
 from app.security import (
-    ACCESS_TOKEN_SECONDS,
     create_access_token,
-    hash_password,
     reject_revoked_token,
     revoke_access_token,
     token_from_request,
-    verify_password,
 )
 from app.validation import (
     FavoriteFolderCreateRequest,
     FavoriteFolderPatchRequest,
     FavoriteMembershipRequest,
-    LoginRequest,
     PackCreateRequest,
     PackPatchRequest,
-    RegisterRequest,
     UserPatchRequest,
     escape_like,
     normalize_name,
@@ -135,6 +131,7 @@ COMMON_ERRORS = {
     415: {"model": ErrorResponse},
     422: {"model": ErrorResponse},
     500: {"model": ErrorResponse},
+    502: {"model": ErrorResponse},
 }
 
 
@@ -406,54 +403,132 @@ def replace_pack_sprites(db: Session, pack_id: int, sprite_ids: Iterable[int]) -
     )
 
 
-# Authentication endpoints.
-@app.post(
-    "/auth/register",
-    response_model=PublicUser,
-    status_code=status.HTTP_201_CREATED,
-    responses=COMMON_ERRORS,
-)
-def register(
-    payload: RegisterRequest,
-    _content_type: Annotated[None, Depends(require_json_content_type)],
-    db: Annotated[Session, Depends(get_db)],
-):
-    user = User(
-        username=payload.username,
-        email=str(payload.email),
-        password_hash=hash_password(payload.password),
+# Authentication is delegated exclusively to Gitea. The platform still issues
+# its own short-lived JWT so the rest of the API does not need to know about the
+# provider access token.
+OAUTH_STATE_COOKIE = "grid_gitea_oauth_state"
+
+
+def _unique_gitea_username(db: Session, preferred: str, subject: str) -> str:
+    try:
+        candidate = normalize_name(preferred)
+    except (TypeError, ValueError):
+        candidate = "gitea-user"
+    if db.scalar(select(User.id).where(User.username == candidate)) is None:
+        return candidate
+    suffix = hashlib.sha256(subject.encode("utf-8")).hexdigest()[:10]
+    candidate = f"{candidate[:27]}-{suffix}"
+    if db.scalar(select(User.id).where(User.username == candidate)) is None:
+        return candidate
+    raise ApiError(409, "GITEA_ACCOUNT_CONFLICT")
+
+
+def _upsert_gitea_user(db: Session, profile: dict[str, Any]) -> User:
+    subject_value = profile.get("sub", profile.get("id"))
+    subject = str(subject_value) if isinstance(subject_value, (str, int)) else None
+    preferred_username = (
+        profile.get("preferred_username")
+        or profile.get("login")
+        or profile.get("name")
     )
-    db.add(user)
+    email = profile.get("email")
+    if not isinstance(subject, str) or not subject or len(subject) > 255:
+        raise ApiError(502, "GITEA_OAUTH_INVALID_RESPONSE")
+    if not isinstance(preferred_username, str) or not preferred_username.strip():
+        raise ApiError(502, "GITEA_OAUTH_INVALID_RESPONSE")
+    if not isinstance(email, str) or "@" not in email:
+        raise ApiError(502, "GITEA_OAUTH_INVALID_RESPONSE")
+    normalized_email = email.strip().lower()
+
+    user = db.scalar(select(User).where(User.gitea_user_id == subject))
+    email_owner = db.scalar(select(User).where(User.email == normalized_email))
+    if user is not None:
+        if email_owner is not None and email_owner.id != user.id:
+            raise ApiError(409, "GITEA_ACCOUNT_CONFLICT")
+        user.email = normalized_email
+    elif email_owner is not None:
+        # First OAuth login migrates an existing local account by matching its
+        # unique email, preserving all uploaded assets, packs, and favorites.
+        user = email_owner
+        if user.gitea_user_id not in {None, subject}:
+            raise ApiError(409, "GITEA_ACCOUNT_CONFLICT")
+        user.gitea_user_id = subject
+    else:
+        user = User(
+            gitea_user_id=subject,
+            username=_unique_gitea_username(db, preferred_username, subject),
+            email=normalized_email,
+            password_hash="!gitea-oauth-only!",
+        )
+        db.add(user)
     try:
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        if db.scalar(select(User.id).where(User.username == payload.username)) is not None:
-            raise ApiError(409, "USERNAME_ALREADY_REGISTERED") from exc
-        raise ApiError(409, "EMAIL_ALREADY_REGISTERED") from exc
+        raise ApiError(409, "GITEA_ACCOUNT_CONFLICT") from exc
     db.refresh(user)
-    return {
-        "id": user.id,
-        "username": user.username,
-        "email": user.email,
-        "created_at": iso_z(user.created_at),
-    }
+    return user
 
 
-@app.post("/auth/login", response_model=TokenResponse, responses=COMMON_ERRORS)
-def login(
-    payload: LoginRequest,
-    _content_type: Annotated[None, Depends(require_json_content_type)],
+@app.get("/auth/gitea/login", include_in_schema=False)
+def gitea_login(request: Request) -> RedirectResponse:
+    callback = urlsplit(settings.gitea_oauth_redirect_uri)
+    canonical_origin = f"{callback.scheme}://{callback.netloc}"
+    request_host = urlsplit(f"//{request.headers.get('host', '')}").hostname
+    if (request_host or "").lower() != (callback.hostname or "").lower():
+        return RedirectResponse(f"{canonical_origin}/auth/gitea/login", status_code=307)
+    state_token = gitea_oauth.create_oauth_state()
+    response = RedirectResponse(gitea_oauth.authorization_url(state_token), status_code=307)
+    response.set_cookie(
+        OAUTH_STATE_COOKIE,
+        state_token,
+        max_age=gitea_oauth.STATE_TTL_SECONDS,
+        httponly=True,
+        secure=settings.oauth_cookie_secure,
+        samesite="lax",
+        path="/auth/gitea/callback",
+    )
+    return response
+
+
+@app.get("/auth/gitea/callback", include_in_schema=False, responses=COMMON_ERRORS)
+def gitea_callback(
+    request: Request,
     db: Annotated[Session, Depends(get_db)],
-):
-    user = db.scalar(select(User).where(User.email == str(payload.email)))
-    if user is None or not verify_password(payload.password, user.password_hash):
-        raise ApiError(401, "INVALID_CREDENTIALS")
-    return {
-        "access_token": create_access_token(user.id),
-        "token_type": "bearer",
-        "expires_in": ACCESS_TOKEN_SECONDS,
-    }
+    code: str | None = Query(None, min_length=1),
+    state_token: str = Query(..., alias="state", min_length=1),
+    error: str | None = None,
+) -> RedirectResponse:
+    gitea_oauth.validate_oauth_state(
+        state_token, request.cookies.get(OAUTH_STATE_COOKIE)
+    )
+    if error:
+        response = RedirectResponse("/#auth_error=gitea_denied", status_code=303)
+        response.delete_cookie(
+            OAUTH_STATE_COOKIE,
+            path="/auth/gitea/callback",
+            secure=settings.oauth_cookie_secure,
+            httponly=True,
+            samesite="lax",
+        )
+        return response
+    if code is None:
+        raise ApiError(400, "BAD_REQUEST")
+    provider_token = gitea_oauth.exchange_code(code)
+    user = _upsert_gitea_user(db, gitea_oauth.fetch_userinfo(provider_token))
+    platform_token = create_access_token(user.id)
+    response = RedirectResponse(
+        f"/#access_token={quote(platform_token, safe='')}&auth=gitea",
+        status_code=303,
+    )
+    response.delete_cookie(
+        OAUTH_STATE_COOKIE,
+        path="/auth/gitea/callback",
+        secure=settings.oauth_cookie_secure,
+        httponly=True,
+        samesite="lax",
+    )
+    return response
 
 
 @app.post(
