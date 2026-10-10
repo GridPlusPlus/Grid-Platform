@@ -589,6 +589,7 @@ def list_sprites(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
     sprite_id: int | None = Query(None, alias="id", ge=1),
+    q: str | None = None,
     name: str | None = None,
     tags: str | None = None,
     tag_mode: str = "and",
@@ -597,7 +598,7 @@ def list_sprites(
 ):
     reject_extra_query(
         request,
-        {"page", "page_size", "id", "name", "tags", "tag_mode", "sort", "mine"},
+        {"page", "page_size", "id", "q", "name", "tags", "tag_mode", "sort", "mine"},
     )
     if tag_mode not in {"and", "or"}:
         raise ApiError(
@@ -621,6 +622,20 @@ def list_sprites(
         conditions.append(Sprite.owner_id == user.id)
     if sprite_id is not None:
         conditions.append(Sprite.id == sprite_id)
+    query_term = normalize_search(q)
+    if query_term:
+        lowered_query = ascii_lower(query_term)
+        query_conditions = [
+            func.lower(Sprite.name).like(
+                f"%{escape_like(lowered_query)}%", escape="\\"
+            ),
+            func.lower(Sprite.tags).like(
+                f"%{escape_like(lowered_query)}%", escape="\\"
+            ),
+        ]
+        if query_term.isdecimal() and int(query_term) > 0:
+            query_conditions.append(Sprite.id == int(query_term))
+        conditions.append(or_(*query_conditions))
     name_term = normalize_search(name)
     if name_term:
         conditions.append(

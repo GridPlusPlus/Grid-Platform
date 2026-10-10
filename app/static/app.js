@@ -19,13 +19,22 @@ const state = {
   userId: Number(sessionStorage.getItem("grid_user_id")) || null,
   email: sessionStorage.getItem("grid_email"),
   spritePage: 1,
+  spriteLoadRequest: 0,
   mySpritePage: 1,
   packPage: 1,
   selectedSprites: [],
   editorSource: "all",
   editorLibrary: [],
+  editorLibraryPage: 1,
+  editorLibraryTotal: 0,
+  editorLibraryHasNext: false,
+  editorLibraryRequest: 0,
+  editorPendingSprites: new Map(),
   editorFavoriteFolders: [],
   editorFavoriteFolderId: null,
+  editorFavoriteSprites: [],
+  editorFavoriteLoadedId: null,
+  editorHiddenCards: new Map(),
   theme: document.documentElement.dataset.theme || "light",
   me: null,
   favoriteFolders: [],
@@ -141,9 +150,12 @@ function switchView(viewName) {
 }
 
 // Render raw RGBA sprites safely through canvas.
-function addTags(container, tags) {
+function addTags(container, tags, limit = null) {
   if (!tags) return;
-  tags.split(",").forEach((tag) => container.append(element("span", {className: "tag", text: tag})));
+  const values = tags.split(",");
+  (limit === null ? values : values.slice(0, limit)).forEach((tag) =>
+    container.append(element("span", {className: "tag", text: tag})));
+  container.title = tags;
 }
 
 async function paintSprite(canvas, spriteId) {
@@ -295,7 +307,7 @@ function spriteCard(sprite) {
   canvas.width = 32;
   canvas.height = 32;
   preview.append(canvas);
-  paintSprite(canvas, sprite.id);
+  const spritePaintPromise = paintSprite(canvas, sprite.id);
   preview.addEventListener("click", async () => {
     preview.disabled = true;
     try {
@@ -307,9 +319,12 @@ function spriteCard(sprite) {
 
   const body = element("div", {className: "card-body"});
   const title = element("div", {className: "card-title"});
-  title.append(element("h3", {text: sprite.name}), element("span", {className: "meta", text: `#${sprite.id}`}));
-  const tags = element("div", {className: "tags"});
-  addTags(tags, sprite.tags);
+  title.append(
+    element("h3", {text: sprite.name, title: sprite.name}),
+    element("span", {className: "meta", text: `#${sprite.id}`}),
+  );
+  const tags = element("div", {className: "tags card-tags"});
+  addTags(tags, sprite.tags, 3);
   body.append(title, element("p", {className: "uploader", text: uploaderText(sprite)}), tags);
   if (sprite.owner_id === state.userId) {
     const actions = element("div", {className: "card-actions"});
@@ -328,6 +343,7 @@ function spriteCard(sprite) {
     body.append(actions);
   }
   card.append(preview, body);
+  card.spritePaintPromise = spritePaintPromise;
   return card;
 }
 
@@ -344,6 +360,7 @@ function pagination(container, pagination, onPage) {
 }
 
 async function loadSprites() {
+  const requestId = ++state.spriteLoadRequest;
   const form = new FormData($("#sprite-filter"));
   const params = new URLSearchParams({
     page: String(state.spritePage),
@@ -354,17 +371,23 @@ async function loadSprites() {
   if (form.get("name").trim()) params.set("name", form.get("name"));
   if (form.get("tags").trim()) params.set("tags", form.get("tags"));
   const grid = $("#sprite-grid");
-  grid.replaceChildren(element("div", {className: "empty", text: "載入中…"}));
+  grid.setAttribute("aria-busy", "true");
   try {
     const data = await api(`/sprites?${params}`);
-    grid.replaceChildren();
-    if (!data.items.length) grid.append(element("div", {className: "empty", text: "沒有符合條件的素材"}));
-    data.items.forEach((sprite) => grid.append(spriteCard(sprite)));
+    if (requestId !== state.spriteLoadRequest) return;
+    const cards = data.items.map((sprite) => spriteCard(sprite));
+    await Promise.all(cards.map((card) => card.spritePaintPromise));
+    if (requestId !== state.spriteLoadRequest) return;
+    if (cards.length) grid.replaceChildren(...cards);
+    else grid.replaceChildren(element("div", {className: "empty", text: "沒有符合條件的素材"}));
     pagination($("#sprite-pagination"), data.pagination, (page) => {
       state.spritePage = page; loadSprites(); window.scrollTo({top: 0, behavior: "smooth"});
     });
   } catch (error) {
+    if (requestId !== state.spriteLoadRequest) return;
     grid.replaceChildren(element("div", {className: "empty", text: error.message}));
+  } finally {
+    if (requestId === state.spriteLoadRequest) grid.removeAttribute("aria-busy");
   }
 }
 
@@ -659,50 +682,143 @@ async function exportPack(id, name) {
 
 function renderSelectedSprites(editable) {
   const list = $("#selected-sprites");
-  list.replaceChildren();
   $("#selected-count").textContent = `${state.selectedSprites.length} 個`;
+  $("#clear-pack-sprites").classList.toggle("hidden", !editable || !state.selectedSprites.length);
+  if (!state.selectedSprites.length) {
+    list.replaceChildren(element("li", {className: "empty", text: "尚未加入素材"}));
+    return;
+  }
+  list.querySelector(".empty")?.remove();
+  const existing = new Map(
+    [...list.querySelectorAll(".selected-item")].map((item) => [item.dataset.spriteId, item]),
+  );
   state.selectedSprites.forEach((sprite, index) => {
-    const item = element("li", {className: "selected-item"});
-    item.draggable = editable;
+    let item = existing.get(String(sprite.id));
+    if (!item || item.dataset.editable !== String(editable)) {
+      item?.remove();
+      item = createSelectedSpriteItem(sprite, editable, list);
+    }
     item.dataset.index = String(index);
-
-    const preview = element("div", {className: "selected-preview"});
-    const canvas = element("canvas");
-    canvas.width = 32;
-    canvas.height = 32;
-    canvas.setAttribute("aria-label", `${sprite.name} 預覽`);
-    preview.append(canvas);
-    paintSprite(canvas, sprite.id);
-
-    const details = element("div", {className: "selected-details"});
-    details.append(
-      element("span", {className: "item-name", text: `${index + 1}. ${sprite.name}`}),
-      element("span", {className: "meta", text: `#${sprite.id}`}),
-    );
-    item.append(preview, details);
+    item.querySelector(".item-name").textContent = `${index + 1}. ${sprite.name}`;
     if (editable) {
-      const actions = element("div", {className: "mini-actions"});
-      const up = element("button", {text: "↑", type: "button", title: "上移"});
-      const down = element("button", {text: "↓", type: "button", title: "下移"});
-      const remove = element("button", {text: "×", type: "button", title: "移除"});
+      const [up, down] = item.querySelectorAll(".mini-actions button");
       up.disabled = index === 0;
       down.disabled = index === state.selectedSprites.length - 1;
-      up.addEventListener("click", () => moveSelected(index, index - 1));
-      down.addEventListener("click", () => moveSelected(index, index + 1));
-      remove.addEventListener("click", () => { state.selectedSprites.splice(index, 1); renderSelectedSprites(true); renderLibrary(); });
-      actions.append(up, down, remove);
-      item.append(actions);
-      item.addEventListener("dragstart", () => item.classList.add("dragging"));
-      item.addEventListener("dragend", () => item.classList.remove("dragging"));
-      item.addEventListener("dragover", (event) => event.preventDefault());
-      item.addEventListener("drop", (event) => {
-        event.preventDefault();
-        const source = Number(list.querySelector(".dragging")?.dataset.index);
-        if (Number.isInteger(source)) moveSelected(source, index);
-      });
     }
     list.append(item);
+    existing.delete(String(sprite.id));
   });
+  existing.forEach((item) => item.remove());
+  if (editable) {
+    list.ondragover = (event) => reorderSelectedDuringDrag(event, list);
+    list.ondrop = (event) => event.preventDefault();
+  } else {
+    list.ondragover = null;
+    list.ondrop = null;
+  }
+}
+
+function createSelectedSpriteItem(sprite, editable, list) {
+  const item = element("li", {className: "selected-item"});
+  item.draggable = editable;
+  item.dataset.spriteId = String(sprite.id);
+  item.dataset.editable = String(editable);
+
+  const handle = element("span", {className: "drag-handle", text: "⠿", title: "拖曳排序"});
+  handle.setAttribute("aria-hidden", "true");
+  const preview = element("div", {className: "selected-preview"});
+  const canvas = element("canvas");
+  canvas.width = 32;
+  canvas.height = 32;
+  canvas.setAttribute("aria-label", `${sprite.name} 預覽`);
+  preview.append(canvas);
+  paintSprite(canvas, sprite.id);
+  const details = element("div", {className: "selected-details"});
+  details.append(
+    element("span", {className: "item-name"}),
+    element("span", {className: "meta", text: `#${sprite.id}`}),
+  );
+  item.append(handle, preview, details);
+  if (!editable) return item;
+
+  const actions = element("div", {className: "mini-actions"});
+  const up = element("button", {text: "↑", type: "button", title: "上移"});
+  const down = element("button", {text: "↓", type: "button", title: "下移"});
+  const remove = element("button", {text: "×", type: "button", title: "移除"});
+  up.addEventListener("click", () => {
+    const index = state.selectedSprites.findIndex((entry) => entry.id === sprite.id);
+    moveSelected(index, index - 1);
+  });
+  down.addEventListener("click", () => {
+    const index = state.selectedSprites.findIndex((entry) => entry.id === sprite.id);
+    moveSelected(index, index + 1);
+  });
+  remove.addEventListener("click", () => {
+    const index = state.selectedSprites.findIndex((entry) => entry.id === sprite.id);
+    if (index < 0) return;
+    state.selectedSprites.splice(index, 1);
+    renderSelectedSprites(true);
+    syncLibraryCards([sprite.id]);
+  });
+  actions.append(up, down, remove);
+  item.append(actions);
+  item.addEventListener("dragstart", (event) => {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", String(sprite.id));
+    list.classList.add("drag-active");
+    requestAnimationFrame(() => item.classList.add("dragging"));
+  });
+  item.addEventListener("dragend", () => {
+    item.classList.remove("dragging");
+    list.classList.remove("drag-active");
+    commitSelectedDragOrder(list);
+  });
+  return item;
+}
+
+function reorderSelectedDuringDrag(event, list) {
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  const dragging = list.querySelector(".dragging");
+  const target = event.target.closest(".selected-item");
+  if (!dragging || !target || target === dragging || !list.contains(target)) return;
+
+  const insertAfter = event.clientY > target.getBoundingClientRect().top + target.offsetHeight / 2;
+  const anchor = insertAfter ? target.nextElementSibling : target;
+  if (anchor === dragging || anchor === dragging.nextElementSibling) return;
+
+  const previousPositions = new Map(
+    [...list.querySelectorAll(".selected-item:not(.dragging)")].map((item) => [
+      item.dataset.spriteId,
+      item.getBoundingClientRect(),
+    ]),
+  );
+  list.insertBefore(dragging, anchor);
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+  list.querySelectorAll(".selected-item:not(.dragging)").forEach((item) => {
+    const previous = previousPositions.get(item.dataset.spriteId);
+    if (!previous) return;
+    const current = item.getBoundingClientRect();
+    const deltaY = previous.top - current.top;
+    if (!deltaY) return;
+    item.animate(
+      [
+        {transform: `translateY(${deltaY}px)`},
+        {transform: "translateY(0)"},
+      ],
+      {duration: 180, easing: "cubic-bezier(.2,.8,.2,1)"},
+    );
+  });
+}
+
+function commitSelectedDragOrder(list) {
+  const byId = new Map(state.selectedSprites.map((sprite) => [sprite.id, sprite]));
+  const reordered = [...list.querySelectorAll(".selected-item")]
+    .map((item) => byId.get(Number(item.dataset.spriteId)))
+    .filter(Boolean);
+  if (reordered.length === state.selectedSprites.length) state.selectedSprites = reordered;
+  renderSelectedSprites(true);
 }
 
 function moveSelected(from, to) {
@@ -715,43 +831,26 @@ function moveSelected(from, to) {
 function renderLibrary() {
   const container = $("#editor-library");
   container.replaceChildren();
+  state.editorHiddenCards.clear();
   const selectedIds = new Set(state.selectedSprites.map((sprite) => sprite.id));
+  const hideAdded = $("#editor-hide-added").checked;
   const search = $("#editor-search").value.trim();
   const selectedFolder = state.editorFavoriteFolders.find(
     (folder) => folder.id === state.editorFavoriteFolderId,
   );
-  state.editorLibrary.forEach((sprite) => {
-    const row = element("div", {className: "library-item"});
-    const preview = element("div", {className: "library-preview"});
-    const canvas = element("canvas");
-    canvas.width = 32;
-    canvas.height = 32;
-    canvas.setAttribute("aria-label", `${sprite.name} 預覽`);
-    preview.append(canvas);
-    paintSprite(canvas, sprite.id);
-
-    const details = element("div", {className: "library-details"});
-    details.append(
-      element("span", {className: "item-name", text: sprite.name}),
-      element("span", {className: "meta", text: `#${sprite.id}`}),
-    );
-    const tags = element("div", {className: "tags library-tags"});
-    addTags(tags, sprite.tags);
-    if (!sprite.tags) tags.append(element("span", {className: "meta", text: "無標籤"}));
-    details.append(tags);
-
-    const add = element("button", {className: "button ghost", text: selectedIds.has(sprite.id) ? "已加入" : "加入", type: "button"});
-    add.disabled = selectedIds.has(sprite.id);
-    add.addEventListener("click", () => {
-      state.selectedSprites.push(sprite);
-      renderSelectedSprites(true);
-      renderLibrary();
-    });
-    row.append(preview, details, add);
-    container.append(row);
+  const visibleSprites = hideAdded
+    ? state.editorLibrary.filter((sprite) => !selectedIds.has(sprite.id))
+    : state.editorLibrary;
+  visibleSprites.forEach((sprite) => {
+    const inPack = selectedIds.has(sprite.id);
+    const pending = state.editorPendingSprites.has(sprite.id);
+    container.append(createLibraryCard(sprite, inPack, pending));
   });
-  if (!state.editorLibrary.length) {
-    let message = search ? "沒有符合的素材" : "輸入 ID、名稱或標籤後搜尋素材";
+  $("#editor-result-count").textContent = `${state.editorLibraryTotal} 個結果`;
+  $("#editor-load-more").classList.toggle("hidden", !state.editorLibraryHasNext);
+  updateEditorBatchBar();
+  if (!visibleSprites.length) {
+    let message = search ? "沒有符合的素材" : "目前沒有素材";
     if (
       state.editorSource === "favorites"
       && !state.editorFavoriteFolders.length
@@ -767,76 +866,204 @@ function renderLibrary() {
       && selectedFolder?.sprite_count === 0
     ) {
       message = "這個收藏夾目前沒有素材";
-    } else if (state.editorSource === "favorites" && !search) {
-      message = "輸入 ID、名稱或標籤後搜尋收藏夾素材";
+    } else if (hideAdded && state.editorLibrary.length) {
+      message = "目前結果都已加入素材包";
     }
     container.append(element("div", {className: "empty", text: message}));
   }
 }
 
-async function loadEditorLibrary() {
+function createLibraryCard(sprite, inPack = false, pending = false) {
+  const card = element("button", {
+    className: `library-card${pending ? " selected" : ""}${inPack ? " in-pack" : ""}`,
+    type: "button",
+    title: inPack ? "已在素材包中" : pending ? "取消選取" : "選取素材",
+  });
+  card.dataset.spriteId = String(sprite.id);
+  card.disabled = inPack;
+  card.setAttribute("aria-pressed", String(pending));
+  const preview = element("div", {className: "library-preview"});
+  const canvas = element("canvas");
+  canvas.width = 32;
+  canvas.height = 32;
+  canvas.setAttribute("aria-label", `${sprite.name} 預覽`);
+  preview.append(canvas);
+  paintSprite(canvas, sprite.id);
+  const details = element("div", {className: "library-details"});
+  details.append(
+    element("span", {className: "item-name", text: sprite.name, title: sprite.name}),
+    element("span", {className: "meta", text: `#${sprite.id}`}),
+  );
+  const tags = element("div", {className: "tags library-tags"});
+  addTags(tags, sprite.tags, 3);
+  if (!sprite.tags) tags.append(element("span", {className: "meta", text: "無標籤"}));
+  details.append(tags);
+  if (inPack || pending) {
+    card.append(element("span", {
+      className: "library-card-badge",
+      text: inPack ? "已加入" : "已選取",
+    }));
+  }
+  card.append(preview, details);
+  card.addEventListener("click", () => {
+    const wasPending = state.editorPendingSprites.has(sprite.id);
+    if (wasPending) state.editorPendingSprites.delete(sprite.id);
+    else state.editorPendingSprites.set(sprite.id, sprite);
+    updateLibraryCardPending(card, !wasPending);
+    updateEditorBatchBar();
+  });
+  return card;
+}
+
+function updateLibraryCardPending(card, pending) {
+  card.classList.toggle("selected", pending);
+  card.setAttribute("aria-pressed", String(pending));
+  card.title = pending ? "取消選取" : "選取素材";
+  const badge = card.querySelector(".library-card-badge");
+  if (pending && !badge) {
+    card.prepend(element("span", {className: "library-card-badge", text: "已選取"}));
+  } else if (!pending) {
+    badge?.remove();
+  }
+}
+
+function updateLibraryCardInPack(card, inPack) {
+  card.classList.remove("selected");
+  card.classList.toggle("in-pack", inPack);
+  card.disabled = inPack;
+  card.setAttribute("aria-pressed", "false");
+  card.title = inPack ? "已在素材包中" : "選取素材";
+  const badge = card.querySelector(".library-card-badge");
+  if (inPack) {
+    if (badge) badge.textContent = "已加入";
+    else card.prepend(element("span", {className: "library-card-badge", text: "已加入"}));
+  } else {
+    badge?.remove();
+  }
+}
+
+function insertLibraryCardInOrder(card, spriteId) {
+  const container = $("#editor-library");
+  container.querySelector(".empty")?.remove();
+  const index = state.editorLibrary.findIndex((sprite) => sprite.id === spriteId);
+  const nextCard = state.editorLibrary.slice(index + 1).reduce((found, sprite) =>
+    found || container.querySelector(`.library-card[data-sprite-id="${sprite.id}"]`), null);
+  container.insertBefore(card, nextCard);
+}
+
+function syncLibraryCards(spriteIds) {
+  const container = $("#editor-library");
+  const selectedIds = new Set(state.selectedSprites.map((sprite) => sprite.id));
+  const hideAdded = $("#editor-hide-added").checked;
+  spriteIds.forEach((spriteId) => {
+    const selector = `.library-card[data-sprite-id="${spriteId}"]`;
+    let card = container.querySelector(selector) || state.editorHiddenCards.get(spriteId);
+    const inPack = selectedIds.has(spriteId);
+    if (!card && !inPack) {
+      const sprite = state.editorLibrary.find((entry) => entry.id === spriteId);
+      if (sprite) card = createLibraryCard(sprite);
+    }
+    if (!card) return;
+    state.editorPendingSprites.delete(spriteId);
+    updateLibraryCardInPack(card, inPack);
+    if (hideAdded && inPack && card.isConnected) {
+      state.editorHiddenCards.set(spriteId, card);
+      card.remove();
+    } else if (!inPack && !card.isConnected) {
+      state.editorHiddenCards.delete(spriteId);
+      insertLibraryCardInOrder(card, spriteId);
+    }
+  });
+  if (hideAdded && !container.querySelector(".library-card")) {
+    container.replaceChildren(element("div", {className: "empty", text: "目前結果都已加入素材包"}));
+  }
+  updateEditorBatchBar();
+}
+
+function updateEditorBatchBar() {
+  const count = state.editorPendingSprites.size;
+  $("#editor-pending-count").textContent = count ? `已選取 ${count} 個素材` : "尚未選取素材";
+  $("#clear-editor-selection").disabled = count === 0;
+  $("#add-editor-selection").disabled = count === 0;
+  $("#add-editor-selection").textContent = count ? `加入 ${count} 個素材` : "加入素材包";
+}
+
+function sortFavoriteSprites(sprites) {
+  const sort = $("#editor-sort").value;
+  return [...sprites].sort((left, right) => {
+    if (sort === "newest") return right.id - left.id;
+    if (sort === "oldest") return left.id - right.id;
+    const direction = sort === "name_desc" ? -1 : 1;
+    return direction * (
+      left.name.localeCompare(right.name, "zh-Hant", {sensitivity: "base"})
+      || left.id - right.id
+    );
+  });
+}
+
+async function loadEditorLibrary({append = false} = {}) {
   const search = $("#editor-search").value.trim();
   const container = $("#editor-library");
-  if (!search) {
-    state.editorLibrary = [];
-    renderLibrary();
-    return;
-  }
-  container.replaceChildren(element("div", {className: "empty", text: "載入中…"}));
+  const requestId = ++state.editorLibraryRequest;
+  if (!append) container.replaceChildren(element("div", {className: "empty", text: "載入中…"}));
   try {
     if (state.editorSource === "favorites") {
       if (!state.editorFavoriteFolderId) {
         state.editorLibrary = [];
+        state.editorLibraryTotal = 0;
+        state.editorLibraryHasNext = false;
         renderLibrary();
         return;
       }
-      const folder = await api(
-        `/favorites/folders/${state.editorFavoriteFolderId}`,
-        {},
-        true,
-      );
-      const normalizedSearch = search.normalize("NFC").toLowerCase();
-      state.editorLibrary = /^\d+$/.test(search)
-        ? folder.sprites.filter((sprite) => sprite.id === Number(search))
-        : folder.sprites.filter((sprite) =>
-          sprite.name.normalize("NFC").toLowerCase().includes(normalizedSearch)
-          || sprite.tags.normalize("NFC").toLowerCase().includes(normalizedSearch));
-    } else {
-      const params = new URLSearchParams({
-        page: "1",
-        page_size: "100",
-        sort: "name_asc",
-      });
-      if (/^\d+$/.test(search)) {
-        params.set("id", search);
-        const data = await api(`/sprites?${params}`);
-        state.editorLibrary = data.items;
-      } else {
-        const byName = new URLSearchParams(params);
-        byName.set("name", search);
-        const byTag = new URLSearchParams(params);
-        byTag.set("tags", search);
-        byTag.set("tag_mode", "or");
-        const [nameData, tagData] = await Promise.all([
-          api(`/sprites?${byName}`),
-          api(`/sprites?${byTag}`),
-        ]);
-        const merged = new Map();
-        [...nameData.items, ...tagData.items].forEach((sprite) => merged.set(sprite.id, sprite));
-        state.editorLibrary = [...merged.values()].sort((left, right) =>
-          left.name.localeCompare(right.name, "zh-Hant", {sensitivity: "base"})
-          || left.id - right.id);
+      if (state.editorFavoriteLoadedId !== state.editorFavoriteFolderId) {
+        const folder = await api(
+          `/favorites/folders/${state.editorFavoriteFolderId}`,
+          {},
+          true,
+        );
+        if (requestId !== state.editorLibraryRequest) return;
+        state.editorFavoriteSprites = folder.sprites;
+        state.editorFavoriteLoadedId = state.editorFavoriteFolderId;
       }
+      const normalizedSearch = search.normalize("NFC").toLowerCase();
+      const filtered = !search
+        ? state.editorFavoriteSprites
+        : state.editorFavoriteSprites.filter((sprite) =>
+          (/^\d+$/.test(search) && sprite.id === Number(search))
+          || sprite.name.normalize("NFC").toLowerCase().includes(normalizedSearch)
+          || sprite.tags.normalize("NFC").toLowerCase().includes(normalizedSearch));
+      state.editorLibrary = sortFavoriteSprites(filtered);
+      state.editorLibraryPage = 1;
+      state.editorLibraryTotal = state.editorLibrary.length;
+      state.editorLibraryHasNext = false;
+    } else {
+      const page = append ? state.editorLibraryPage + 1 : 1;
+      const params = new URLSearchParams({
+        page: String(page),
+        page_size: "48",
+        sort: $("#editor-sort").value,
+      });
+      if (search) params.set("q", search);
+      const data = await api(`/sprites?${params}`);
+      if (requestId !== state.editorLibraryRequest) return;
+      const existing = append ? state.editorLibrary : [];
+      const merged = new Map(existing.map((sprite) => [sprite.id, sprite]));
+      data.items.forEach((sprite) => merged.set(sprite.id, sprite));
+      state.editorLibrary = [...merged.values()];
+      state.editorLibraryPage = page;
+      state.editorLibraryTotal = data.pagination.total_items;
+      state.editorLibraryHasNext = data.pagination.has_next;
     }
     renderLibrary();
   } catch (error) {
+    if (requestId !== state.editorLibraryRequest) return;
     state.editorLibrary = [];
+    state.editorLibraryTotal = 0;
+    state.editorLibraryHasNext = false;
     renderLibrary();
     notify(error.message, true);
     if (state.editorSource === "favorites") {
       await loadEditorFavoriteFolders();
-      state.editorLibrary = [];
-      renderLibrary();
     }
   }
 }
@@ -867,12 +1094,16 @@ async function loadEditorFavoriteFolders() {
       state.editorFavoriteFolderId = state.editorFavoriteFolders[0]?.id || null;
     }
     renderEditorFavoriteFolders();
-    state.editorLibrary = [];
-    renderLibrary();
+    state.editorFavoriteSprites = [];
+    state.editorFavoriteLoadedId = null;
   } catch (error) {
     state.editorFavoriteFolders = [];
     state.editorFavoriteFolderId = null;
+    state.editorFavoriteSprites = [];
+    state.editorFavoriteLoadedId = null;
     state.editorLibrary = [];
+    state.editorLibraryTotal = 0;
+    state.editorLibraryHasNext = false;
     renderEditorFavoriteFolders();
     renderLibrary();
     notify(error.message, true);
@@ -883,6 +1114,8 @@ async function switchEditorSource(source) {
   state.editorSource = source;
   $("#editor-search").value = "";
   state.editorLibrary = [];
+  state.editorLibraryTotal = 0;
+  state.editorLibraryHasNext = false;
   $$(".editor-source-tab").forEach((tab) => {
     const active = tab.dataset.editorSource === source;
     tab.classList.toggle("active", active);
@@ -891,9 +1124,8 @@ async function switchEditorSource(source) {
   $("#editor-folder-field").classList.toggle("hidden", source !== "favorites");
   if (source === "favorites") {
     await loadEditorFavoriteFolders();
-  } else {
-    renderLibrary();
   }
+  await loadEditorLibrary();
 }
 
 async function openPackEditor(packId = null) {
@@ -906,9 +1138,17 @@ async function openPackEditor(packId = null) {
   state.selectedSprites = [];
   state.editorSource = "all";
   state.editorLibrary = [];
+  state.editorLibraryPage = 1;
+  state.editorLibraryTotal = 0;
+  state.editorLibraryHasNext = false;
+  state.editorPendingSprites.clear();
   state.editorFavoriteFolders = [];
   state.editorFavoriteFolderId = null;
+  state.editorFavoriteSprites = [];
+  state.editorFavoriteLoadedId = null;
   $("#editor-search").value = "";
+  $("#editor-sort").value = "name_asc";
+  $("#editor-hide-added").checked = false;
   renderEditorFavoriteFolders();
   $("#editor-folder-field").classList.add("hidden");
   $$(".editor-source-tab").forEach((tab) => {
@@ -933,8 +1173,8 @@ async function openPackEditor(packId = null) {
   $("#pack-form").querySelector('button[type="submit"]').classList.toggle("hidden", !editable);
   $("#pack-library-section").classList.toggle("hidden", !editable);
   renderSelectedSprites(editable);
-  if (editable) renderLibrary();
   $("#pack-dialog").showModal();
+  if (editable) await loadEditorLibrary();
 }
 
 // Wire page navigation and dialog controls.
@@ -1025,16 +1265,61 @@ $$("[data-pan-y]").forEach((button) => {
   });
 }
 $("#create-pack").addEventListener("click", () => openPackEditor());
-$("#editor-search-button").addEventListener("click", loadEditorLibrary);
-$("#editor-search").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); loadEditorLibrary(); } });
+let editorSearchTimer = null;
+$("#editor-search-button").addEventListener("click", () => {
+  clearTimeout(editorSearchTimer);
+  loadEditorLibrary();
+});
+$("#editor-search").addEventListener("input", () => {
+  clearTimeout(editorSearchTimer);
+  editorSearchTimer = setTimeout(() => loadEditorLibrary(), 300);
+});
+$("#editor-search").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    clearTimeout(editorSearchTimer);
+    loadEditorLibrary();
+  }
+});
+$("#editor-sort").addEventListener("change", () => loadEditorLibrary());
+$("#editor-hide-added").addEventListener("change", renderLibrary);
+$("#editor-load-more").addEventListener("click", () => loadEditorLibrary({append: true}));
+$("#clear-editor-selection").addEventListener("click", () => {
+  state.editorPendingSprites.clear();
+  $$("#editor-library .library-card.selected").forEach((card) => {
+    updateLibraryCardPending(card, false);
+  });
+  updateEditorBatchBar();
+});
+$("#add-editor-selection").addEventListener("click", () => {
+  const selectedIds = new Set(state.selectedSprites.map((sprite) => sprite.id));
+  const addedIds = [];
+  state.editorPendingSprites.forEach((sprite) => {
+    if (!selectedIds.has(sprite.id)) {
+      state.selectedSprites.push(sprite);
+      addedIds.push(sprite.id);
+    }
+  });
+  state.editorPendingSprites.clear();
+  renderSelectedSprites(true);
+  syncLibraryCards(addedIds);
+});
+$("#clear-pack-sprites").addEventListener("click", () => {
+  if (!state.selectedSprites.length || !confirm("確定移除素材包中的所有素材？")) return;
+  const removedIds = state.selectedSprites.map((sprite) => sprite.id);
+  state.selectedSprites = [];
+  renderSelectedSprites(true);
+  syncLibraryCards(removedIds);
+});
 $$(".editor-source-tab").forEach((tab) => {
   tab.addEventListener("click", () => switchEditorSource(tab.dataset.editorSource));
 });
-$("#editor-folder-select").addEventListener("change", (event) => {
+$("#editor-folder-select").addEventListener("change", async (event) => {
   state.editorFavoriteFolderId = Number(event.currentTarget.value) || null;
+  state.editorFavoriteSprites = [];
+  state.editorFavoriteLoadedId = null;
   $("#editor-search").value = "";
-  state.editorLibrary = [];
-  renderLibrary();
+  await loadEditorLibrary();
 });
 
 $("#logout-button").addEventListener("click", async () => {

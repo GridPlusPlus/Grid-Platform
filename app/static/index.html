@@ -13,7 +13,7 @@
       document.documentElement.dataset.theme = "light";
     }
   </script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260625-12">
+  <link rel="stylesheet" href="/static/styles.css?v=20261010-5">
 </head>
 <body>
   <header class="topbar">
@@ -219,12 +219,13 @@
       <input id="pack-id" type="hidden">
       <label>素材包名稱<input id="pack-name" required></label>
       <div class="editor-columns">
-        <section>
-          <div class="section-heading"><h3>素材順序</h3><span id="selected-count">0 個</span></div>
+        <section class="pack-selection-panel">
+          <div class="section-heading"><h3>素材包內容</h3><span id="selected-count">0 個</span></div>
+          <div class="selection-tools"><span class="hint">可用滑鼠拖曳調整順序</span><button id="clear-pack-sprites" class="text-button" type="button">全部移除</button></div>
           <ol id="selected-sprites" class="selected-list"></ol>
         </section>
-        <section id="pack-library-section">
-          <div class="section-heading"><h3>加入素材</h3></div>
+        <section id="pack-library-section" class="pack-library-panel">
+          <div class="section-heading"><h3>素材庫</h3><span id="editor-result-count" class="meta"></span></div>
           <div class="editor-source-tabs" role="tablist" aria-label="素材來源">
             <button class="editor-source-tab active" data-editor-source="all" type="button" role="tab" aria-selected="true">全部素材</button>
             <button class="editor-source-tab" data-editor-source="favorites" type="button" role="tab" aria-selected="false">我的收藏</button>
@@ -232,11 +233,30 @@
           <label id="editor-folder-field" class="editor-folder-field hidden">收藏夾
             <select id="editor-folder-select"></select>
           </label>
-          <div class="inline-search editor-search-row"><input id="editor-search" type="search" placeholder="搜尋 ID、名稱或標籤"><button id="editor-search-button" class="button ghost" type="button">搜尋</button></div>
-          <div id="editor-library" class="library-list"></div>
+          <div class="editor-library-controls">
+            <div class="inline-search editor-search-row"><input id="editor-search" type="search" placeholder="搜尋 ID、名稱或標籤"><button id="editor-search-button" class="button ghost" type="button">搜尋</button></div>
+            <label>排序
+              <select id="editor-sort">
+                <option value="name_asc">名稱 A–Z</option>
+                <option value="newest">最新上傳</option>
+                <option value="oldest">最早上傳</option>
+                <option value="name_desc">名稱 Z–A</option>
+              </select>
+            </label>
+            <label class="check-label editor-hide-added"><input id="editor-hide-added" type="checkbox">隱藏已加入</label>
+          </div>
+          <div id="editor-library" class="library-grid"></div>
+          <button id="editor-load-more" class="button ghost editor-load-more hidden" type="button">載入更多</button>
+          <div id="editor-batch-bar" class="editor-batch-bar">
+            <span id="editor-pending-count">尚未選取素材</span>
+            <div class="editor-batch-actions">
+              <button id="clear-editor-selection" class="button ghost" type="button">取消選取</button>
+              <button id="add-editor-selection" class="button dark" type="button">加入素材包</button>
+            </div>
+          </div>
         </section>
       </div>
-      <button class="button primary" type="submit">儲存素材包</button>
+      <div class="editor-footer"><button class="button primary" type="submit">儲存素材包</button></div>
     </form>
   </dialog>
 
@@ -280,6 +300,6 @@
     </div>
   </dialog>
 
-  <script src="/static/app.js?v=20260625-12" defer></script>
+  <script src="/static/app.js?v=20261010-5" defer></script>
 </body>
 </html>

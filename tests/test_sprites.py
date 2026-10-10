@@ -211,6 +211,12 @@ def test_search_escapes_like_wildcards_and_stable_pagination(client):
     missing_id = client.get("/sprites", params={"id": 99999})
     assert missing_id.status_code == 200
     assert missing_id.json()["items"] == []
+    combined_name = client.get("/sprites", params={"q": "plain"})
+    assert [item["name"] for item in combined_name.json()["items"]] == ["plain hero"]
+    combined_tag = client.get("/sprites", params={"q": "friend"})
+    assert [item["name"] for item in combined_tag.json()["items"]] == ["under_score"]
+    combined_id = client.get("/sprites", params={"q": str(by_id.json()["items"][0]["id"])})
+    assert [item["name"] for item in combined_id.json()["items"]] == ["exact id"]
     beyond = client.get("/sprites", params={"page": 9, "page_size": 2})
     assert beyond.status_code == 200
     assert beyond.json()["items"] == []
