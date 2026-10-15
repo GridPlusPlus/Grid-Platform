@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.models import Pack, PackSprite, Sprite, User
-from app.config import get_settings
+from app.config import OAuthConfigError, get_oauth_settings
 
 
 def test_database_checks_foreign_keys_and_delete_actions(db_session):
@@ -90,14 +90,30 @@ def test_settings_load_generated_gitea_oauth_file(monkeypatch, tmp_path):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("GITEA_OAUTH_CONFIG_FILE", str(oauth_file))
     monkeypatch.delenv("OAUTH_COOKIE_SECURE", raising=False)
-    get_settings.cache_clear()
-    try:
-        settings = get_settings()
-        assert settings.gitea_internal_url == "http://gitea:3000"
-        assert settings.gitea_public_url == "https://git.example.test"
-        assert settings.gitea_oauth_client_id == "generated-client"
-        assert settings.gitea_oauth_client_secret == "generated-secret"
-        assert settings.gitea_oauth_redirect_uri.endswith("/auth/gitea/callback")
-        assert settings.oauth_cookie_secure is True
-    finally:
-        get_settings.cache_clear()
+    settings = get_oauth_settings()
+    assert settings.gitea_internal_url == "http://gitea:3000"
+    assert settings.gitea_public_url == "https://git.example.test"
+    assert settings.gitea_oauth_client_id == "generated-client"
+    assert settings.gitea_oauth_client_secret == "generated-secret"
+    assert settings.gitea_oauth_redirect_uri.endswith("/auth/gitea/callback")
+    assert settings.oauth_cookie_secure is True
+
+    # A re-provisioned secret is picked up without restarting the service.
+    payload = json.loads(oauth_file.read_text(encoding="utf-8"))
+    payload["gitea_oauth_client_secret"] = "rotated-secret"
+    oauth_file.write_text(json.dumps(payload), encoding="utf-8")
+    assert get_oauth_settings().gitea_oauth_client_secret == "rotated-secret"
+
+
+def test_missing_gitea_oauth_file_raises_config_error(monkeypatch, tmp_path):
+    for name in (
+        "GITEA_INTERNAL_URL",
+        "GITEA_PUBLIC_URL",
+        "GITEA_OAUTH_CLIENT_ID",
+        "GITEA_OAUTH_CLIENT_SECRET",
+        "GITEA_OAUTH_REDIRECT_URI",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GITEA_OAUTH_CONFIG_FILE", str(tmp_path / "missing.json"))
+    with pytest.raises(OAuthConfigError):
+        get_oauth_settings()

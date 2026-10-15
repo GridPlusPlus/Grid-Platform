@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -10,10 +11,11 @@ from urllib.request import Request, urlopen
 
 from jose import ExpiredSignatureError, JWTError, jwt
 
-from app.config import get_settings
+from app.config import OAuthConfigError, OAuthSettings, get_oauth_settings, get_settings
 from app.errors import ApiError
 
 
+logger = logging.getLogger("grid_platform")
 STATE_ALGORITHM = "HS256"
 STATE_TTL_SECONDS = 600
 
@@ -48,8 +50,16 @@ def validate_oauth_state(query_state: str, cookie_state: str | None) -> None:
         raise ApiError(401, "GITEA_OAUTH_STATE_INVALID")
 
 
+def oauth_settings() -> OAuthSettings:
+    try:
+        return get_oauth_settings()
+    except OAuthConfigError as exc:
+        logger.error("Gitea OAuth is not configured: %s", exc)
+        raise ApiError(503, "GITEA_OAUTH_NOT_CONFIGURED") from exc
+
+
 def authorization_url(state: str) -> str:
-    settings = get_settings()
+    settings = oauth_settings()
     query = urlencode(
         {
             "client_id": settings.gitea_oauth_client_id,
@@ -66,11 +76,28 @@ def _json_request(request: Request) -> dict[str, Any]:
     try:
         with urlopen(request, timeout=10) as response:
             content = response.read()
-    except (HTTPError, URLError, TimeoutError) as exc:
+    except HTTPError as exc:
+        # Gitea explains token failures (invalid_client, invalid_grant, ...)
+        # in the body; it never contains the client secret.
+        try:
+            detail = exc.read(500).decode("utf-8", "replace")
+        except OSError:
+            detail = ""
+        logger.error(
+            "Gitea OAuth request failed: %s %s -> HTTP %s %s",
+            request.get_method(), request.full_url, exc.code, detail,
+        )
+        raise ApiError(502, "GITEA_OAUTH_REJECTED") from exc
+    except (URLError, TimeoutError, OSError) as exc:
+        logger.error(
+            "Gitea OAuth request failed: %s %s -> %s",
+            request.get_method(), request.full_url, getattr(exc, "reason", exc),
+        )
         raise ApiError(502, "GITEA_OAUTH_UNAVAILABLE") from exc
     try:
         payload = json.loads(content)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        logger.error("Gitea OAuth returned non-JSON from %s", request.full_url)
         raise ApiError(502, "GITEA_OAUTH_INVALID_RESPONSE") from exc
     if not isinstance(payload, dict):
         raise ApiError(502, "GITEA_OAUTH_INVALID_RESPONSE")
@@ -78,8 +105,9 @@ def _json_request(request: Request) -> dict[str, Any]:
 
 
 def exchange_code(code: str) -> str:
-    settings = get_settings()
-    body = json.dumps(
+    settings = oauth_settings()
+    # RFC 6749 section 4.1.3: the token request is form encoded.
+    body = urlencode(
         {
             "client_id": settings.gitea_oauth_client_id,
             "client_secret": settings.gitea_oauth_client_secret,
@@ -92,7 +120,10 @@ def exchange_code(code: str) -> str:
         Request(
             f"{settings.gitea_internal_url}/login/oauth/access_token",
             data=body,
-            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
             method="POST",
         )
     )
@@ -103,7 +134,7 @@ def exchange_code(code: str) -> str:
 
 
 def fetch_userinfo(access_token: str) -> dict[str, Any]:
-    settings = get_settings()
+    settings = oauth_settings()
     return _json_request(
         Request(
             f"{settings.gitea_internal_url}/api/v1/user",

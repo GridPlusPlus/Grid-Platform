@@ -9,6 +9,11 @@ services:
       - ./app/static:/usr/share/nginx/html:ro
     expose:
       - "80"
+    networks:
+      default: {}
+      # The outer reverse proxy reaches this service as http://gridplusplus.
+      edge:
+        aliases: [gridplusplus]
     depends_on:
       app:
         condition: service_healthy
@@ -27,6 +32,12 @@ services:
     volumes:
       - grid_data:/data
       - grid_oauth_config:/run/grid-oauth:ro
+    networks:
+      default:
+        aliases: [gridplusplus-platform-app]
+      # Gitea OAuth token/userinfo calls go to http://gridplusplus-git:3000,
+      # which only exists on the shared edge network.
+      edge: {}
     healthcheck:
       test:
         [
@@ -39,6 +50,11 @@ services:
       timeout: 3s
       retries: 5
       start_period: 20s
+
+networks:
+  edge:
+    external: true
+    name: ${EDGE_NETWORK:-nginx}
 
 volumes:
   grid_data:

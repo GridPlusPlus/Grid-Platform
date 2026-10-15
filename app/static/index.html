@@ -13,7 +13,7 @@
       document.documentElement.dataset.theme = "light";
     }
   </script>
-  <link rel="stylesheet" href="/static/styles.css?v=20261010-5">
+  <link rel="stylesheet" href="/static/styles.css?v=20261015-1">
 </head>
 <body>
   <header class="topbar">
@@ -24,14 +24,16 @@
     <nav class="tabs" aria-label="主要功能">
       <button class="tab active" data-view="sprites">素材</button>
       <button class="tab" data-view="packs">素材包</button>
-      <button class="tab" data-view="account">帳號</button>
     </nav>
     <div class="session">
       <button id="theme-toggle" class="theme-toggle" type="button" aria-label="切換黑夜模式" title="切換黑夜模式">
         <span class="theme-icon" aria-hidden="true">☾</span>
       </button>
-      <span id="session-label">未登入</span>
-      <button id="logout-button" class="button ghost hidden">登出</button>
+      <a id="login-button" class="button primary session-button" href="/auth/gitea/login">登入</a>
+      <button id="account-button" class="account-chip hidden" type="button" title="帳號與收藏">
+        <span id="session-label"></span>
+      </button>
+      <button id="logout-button" class="button ghost session-button hidden" type="button">登出</button>
     </div>
   </header>
 
@@ -300,6 +302,6 @@
     </div>
   </dialog>
 
-  <script src="/static/app.js?v=20261010-5" defer></script>
+  <script src="/static/app.js?v=20261015-1" defer></script>
 </body>
 </html>

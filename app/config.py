@@ -22,12 +22,20 @@ class Settings:
     database_url: str
     jwt_secret: str
     cors_origins: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class OAuthSettings:
     gitea_internal_url: str
     gitea_public_url: str
     gitea_oauth_client_id: str
     gitea_oauth_client_secret: str
     gitea_oauth_redirect_uri: str
     oauth_cookie_secure: bool
+
+
+class OAuthConfigError(RuntimeError):
+    """Raised when Gitea OAuth credentials are missing or unreadable."""
 
 
 @lru_cache
@@ -47,6 +55,19 @@ def get_settings() -> Settings:
     if "*" in origins:
         raise RuntimeError("CORS_ORIGINS 不可使用萬用來源 *")
 
+    return Settings(
+        database_url=os.getenv("DATABASE_URL", default_database_url()),
+        jwt_secret=secret,
+        cors_origins=origins,
+    )
+
+
+def get_oauth_settings() -> OAuthSettings:
+    """Load Gitea OAuth settings on every call.
+
+    The credentials file is written by the Gitea deployment and may be created
+    or rotated after this service has started, so it is never cached.
+    """
     oauth_file = Path(
         os.getenv("GITEA_OAUTH_CONFIG_FILE", "/run/grid-oauth/client.json")
     )
@@ -55,9 +76,9 @@ def get_settings() -> Settings:
         try:
             raw_config = json.loads(oauth_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            raise RuntimeError(f"無法讀取 Gitea OAuth 設定檔: {oauth_file}") from exc
+            raise OAuthConfigError(f"無法讀取 Gitea OAuth 設定檔: {oauth_file}") from exc
         if not isinstance(raw_config, dict):
-            raise RuntimeError(f"Gitea OAuth 設定檔格式錯誤: {oauth_file}")
+            raise OAuthConfigError(f"Gitea OAuth 設定檔格式錯誤: {oauth_file}")
         oauth_config = {
             str(name): str(value)
             for name, value in raw_config.items()
@@ -84,7 +105,9 @@ def get_settings() -> Settings:
     }
     missing = [name for name, value in oauth_values.items() if not value]
     if missing:
-        raise RuntimeError(f"缺少 Gitea OAuth 設定: {', '.join(missing)}")
+        raise OAuthConfigError(
+            f"缺少 Gitea OAuth 設定: {', '.join(missing)}（設定檔: {oauth_file}）"
+        )
 
     redirect_uri = oauth_values["GITEA_OAUTH_REDIRECT_URI"] or ""
     secure_default = redirect_uri.lower().startswith("https://")
@@ -95,10 +118,7 @@ def get_settings() -> Settings:
         else secure_value.strip().lower() in {"1", "true", "yes", "on"}
     )
 
-    return Settings(
-        database_url=os.getenv("DATABASE_URL", default_database_url()),
-        jwt_secret=secret,
-        cors_origins=origins,
+    return OAuthSettings(
         gitea_internal_url=(oauth_values["GITEA_INTERNAL_URL"] or "").rstrip("/"),
         gitea_public_url=(oauth_values["GITEA_PUBLIC_URL"] or "").rstrip("/"),
         gitea_oauth_client_id=oauth_values["GITEA_OAUTH_CLIENT_ID"] or "",

@@ -21,7 +21,13 @@ from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from app.config import PROJECT_ROOT, get_settings
+from app.config import (
+    PROJECT_ROOT,
+    OAuthConfigError,
+    OAuthSettings,
+    get_oauth_settings,
+    get_settings,
+)
 from app.database import get_db
 from app.errors import ApiError, install_exception_handlers, validation_detail
 from app import gitea_oauth
@@ -64,6 +70,17 @@ from app.models import FavoriteFolder, FavoriteFolderSprite
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("grid_platform")
 settings = get_settings()
+
+try:
+    _oauth = get_oauth_settings()
+    logger.info(
+        "Gitea OAuth configured: public=%s internal=%s redirect=%s",
+        _oauth.gitea_public_url, _oauth.gitea_internal_url, _oauth.gitea_oauth_redirect_uri,
+    )
+except OAuthConfigError as exc:
+    # Keep serving the site; login reports the problem until the credentials
+    # file written by the Gitea deployment appears.
+    logger.warning("Gitea OAuth is not configured yet: %s", exc)
 
 # Configure the HTTP application and optional development CORS.
 app = FastAPI(
@@ -470,13 +487,46 @@ def _upsert_gitea_user(db: Session, profile: dict[str, Any]) -> User:
     return user
 
 
+def _origin(scheme: str, netloc: str) -> tuple[str, str, int | None]:
+    parts = urlsplit(f"{scheme}://{netloc}")
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    default_port = {"http": 80, "https": 443}.get(parts.scheme.lower())
+    return parts.scheme.lower(), (parts.hostname or "").lower(), port or default_port
+
+
+def _delete_state_cookie(response: Response, oauth: OAuthSettings) -> None:
+    response.delete_cookie(
+        OAUTH_STATE_COOKIE,
+        path="/auth/gitea/callback",
+        secure=oauth.oauth_cookie_secure,
+        httponly=True,
+        samesite="lax",
+    )
+
+
 @app.get("/auth/gitea/login", include_in_schema=False)
-def gitea_login(request: Request) -> RedirectResponse:
-    callback = urlsplit(settings.gitea_oauth_redirect_uri)
+def gitea_login(request: Request, canonical: bool = False) -> RedirectResponse:
+    try:
+        oauth = gitea_oauth.oauth_settings()
+    except ApiError as exc:
+        return RedirectResponse(f"/#auth_error={exc.code}", status_code=303)
+    callback = urlsplit(oauth.gitea_oauth_redirect_uri)
     canonical_origin = f"{callback.scheme}://{callback.netloc}"
-    request_host = urlsplit(f"//{request.headers.get('host', '')}").hostname
-    if (request_host or "").lower() != (callback.hostname or "").lower():
-        return RedirectResponse(f"{canonical_origin}/auth/gitea/login", status_code=307)
+    # The state cookie must be set on the callback's origin, otherwise the
+    # browser will not send it back. Behind proxies, Host/scheme are taken from
+    # the forwarded headers; the ``canonical`` flag stops a redirect loop when a
+    # proxy rewrites Host to an internal name.
+    forwarded_host = request.headers.get("x-forwarded-host", "").split(",")[0].strip()
+    request_origin = _origin(
+        request.url.scheme, forwarded_host or request.headers.get("host", "")
+    )
+    if not canonical and request_origin != _origin(callback.scheme, callback.netloc):
+        return RedirectResponse(
+            f"{canonical_origin}/auth/gitea/login?canonical=1", status_code=307
+        )
     state_token = gitea_oauth.create_oauth_state()
     response = RedirectResponse(gitea_oauth.authorization_url(state_token), status_code=307)
     response.set_cookie(
@@ -484,7 +534,7 @@ def gitea_login(request: Request) -> RedirectResponse:
         state_token,
         max_age=gitea_oauth.STATE_TTL_SECONDS,
         httponly=True,
-        secure=settings.oauth_cookie_secure,
+        secure=oauth.oauth_cookie_secure,
         samesite="lax",
         path="/auth/gitea/callback",
     )
@@ -495,39 +545,42 @@ def gitea_login(request: Request) -> RedirectResponse:
 def gitea_callback(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
-    code: str | None = Query(None, min_length=1),
-    state_token: str = Query(..., alias="state", min_length=1),
+    code: str | None = Query(None),
+    state_token: str | None = Query(None, alias="state"),
     error: str | None = None,
 ) -> RedirectResponse:
-    gitea_oauth.validate_oauth_state(
-        state_token, request.cookies.get(OAUTH_STATE_COOKIE)
-    )
-    if error:
-        response = RedirectResponse("/#auth_error=gitea_denied", status_code=303)
-        response.delete_cookie(
-            OAUTH_STATE_COOKIE,
-            path="/auth/gitea/callback",
-            secure=settings.oauth_cookie_secure,
-            httponly=True,
-            samesite="lax",
+    # The browser lands here directly, so failures go back to the UI as a
+    # fragment it can explain instead of a bare JSON page.
+    try:
+        oauth = gitea_oauth.oauth_settings()
+    except ApiError as exc:
+        return RedirectResponse(f"/#auth_error={exc.code}", status_code=303)
+    try:
+        if error:
+            logger.info("Gitea OAuth authorization was not granted: %s", error)
+            raise ApiError(401, "GITEA_OAUTH_DENIED")
+        gitea_oauth.validate_oauth_state(
+            state_token or "", request.cookies.get(OAUTH_STATE_COOKIE)
         )
+        if not code:
+            raise ApiError(400, "BAD_REQUEST")
+        provider_token = gitea_oauth.exchange_code(code)
+        user = _upsert_gitea_user(db, gitea_oauth.fetch_userinfo(provider_token))
+    except ApiError as exc:
+        if exc.code == "GITEA_OAUTH_STATE_INVALID":
+            logger.warning(
+                "Gitea OAuth state rejected (cookie present: %s)",
+                OAUTH_STATE_COOKIE in request.cookies,
+            )
+        response = RedirectResponse(f"/#auth_error={exc.code}", status_code=303)
+        _delete_state_cookie(response, oauth)
         return response
-    if code is None:
-        raise ApiError(400, "BAD_REQUEST")
-    provider_token = gitea_oauth.exchange_code(code)
-    user = _upsert_gitea_user(db, gitea_oauth.fetch_userinfo(provider_token))
     platform_token = create_access_token(user.id)
     response = RedirectResponse(
         f"/#access_token={quote(platform_token, safe='')}&auth=gitea",
         status_code=303,
     )
-    response.delete_cookie(
-        OAUTH_STATE_COOKIE,
-        path="/auth/gitea/callback",
-        secure=settings.oauth_cookie_secure,
-        httponly=True,
-        samesite="lax",
-    )
+    _delete_state_cookie(response, oauth)
     return response
 
 

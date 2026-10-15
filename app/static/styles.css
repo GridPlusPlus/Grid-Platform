@@ -102,7 +102,24 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .tab { padding: 9px 18px; border: 0; border-radius: 999px; color: var(--muted); background: transparent; }
 .tab.active { color: var(--solid-text); background: var(--solid-bg); }
 .tab:not(.active):hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 9%, transparent); }
-.session { justify-self: end; display: flex; align-items: center; gap: 12px; font-size: 14px; color: var(--muted); }
+.session { justify-self: end; display: flex; align-items: center; gap: 10px; min-width: 0; font-size: 14px; color: var(--muted); }
+.session-button { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 6px 14px; font-size: 14px; font-weight: 700; text-decoration: none; }
+.account-chip {
+  max-width: 220px;
+  min-height: 36px;
+  padding: 6px 14px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink);
+  background: var(--card);
+  font-size: 14px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-chip:hover { background: var(--ghost-hover); }
+.account-chip.active { color: var(--solid-text); border-color: var(--solid-bg); background: var(--solid-bg); }
 .theme-toggle {
   display: grid;
   place-items: center;
@@ -525,7 +542,9 @@ dialog:open { animation: appear .16s ease-out; }
 }
 @media (max-width: 540px) {
   main { padding-top: 30px; }
-  .session span { display: none; }
+  .session { gap: 8px; }
+  .brand > span:not(.brand-mark) { display: none; }
+  .account-chip { max-width: 130px; }
   .filter-bar { grid-template-columns: 1fr; }
   .filter-bar .button { grid-column: auto; }
   .pack-card { align-items: start; flex-direction: column; }

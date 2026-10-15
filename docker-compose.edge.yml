@@ -1,15 +1,3 @@
-services:
-  nginx:
-    networks:
-      default: {}
-      edge:
-        aliases: [gridplusplus]
-  app:
-    networks:
-      default: {}
-      edge: {}
-
-networks:
-  edge:
-    external: true
-    name: ${EDGE_NETWORK}
+# The edge network is now part of docker-compose.yml. This file is kept so
+# existing COMPOSE_FILE settings that still list it keep working.
+services: {}

@@ -42,7 +42,7 @@ docker/
 tests/                   # API、資料庫與圖片處理測試
 Dockerfile
 docker-compose.yml
-docker-compose.edge.yml  # 可選：讓前端 nginx 加入既有外部網路
+docker-compose.edge.yml  # 相容用：外部網路設定已併入 docker-compose.yml
 ```
 
 ## 本機開發
@@ -203,32 +203,25 @@ docker network inspect nginx
    docker volume inspect grid_oauth_config
    ```
 
-5. 若只需要讓容器彼此連線，不需修改其他設定，可直接進行「四、啟動服務」。此模式不發布宿主機 port，因此無法從宿主機或外部網路直接連線。
-
-6. 若要接到外層 nginx，在 `.env` 取消註解並填入：
-
-   Windows 本機開發 `.env`：
-
-   ```env
-   COMPOSE_FILE=docker-compose.yml;docker-compose.edge.yml;docker-compose.dev.yml
-   EDGE_NETWORK=nginx
-   ```
-
-   Linux 本機開發 `.env`：
+5. Compose 一律把 `app` 與前端 `nginx` 接上外部 network（預設名稱 `nginx`，與 Gitea
+   相同）。`app` 必須在這張 network 上，才能以 `http://gridplusplus-git:3000` 向 Gitea
+   換取 OAuth token；外層 nginx 也透過它連到本服務。若實際 network 名稱不是 `nginx`，
+   在 `.env` 設定：
 
    ```env
-   COMPOSE_FILE=docker-compose.yml:docker-compose.edge.yml:docker-compose.dev.yml
-   EDGE_NETWORK=nginx
+   EDGE_NETWORK=實際名稱
    ```
 
-   Linux 正式環境不發布開發用的 `8000` port：
+   正式環境不需要設定 `COMPOSE_FILE`。本機開發若要從宿主機 `127.0.0.1:8000` 連線，再加上：
 
    ```env
-   COMPOSE_FILE=docker-compose.yml:docker-compose.edge.yml
-   EDGE_NETWORK=nginx
+   # Windows
+   COMPOSE_FILE=docker-compose.yml;docker-compose.dev.yml
+   # Linux
+   COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml
    ```
 
-   將 `nginx` 改成第一節確認的實際 network 名稱。
+   舊 `.env` 若仍列出 `docker-compose.edge.yml` 可以保留，該檔現在不影響設定。
 
 ### 三、設定外層 nginx
 
@@ -247,6 +240,10 @@ docker network inspect nginx
    ```
 
 3. 檢查 nginx 設定語法，確認成功後再依伺服器原有方式 reload nginx。
+
+外層代理必須保留瀏覽器使用的 `Host`，並傳送 `X-Forwarded-Proto`。使用 Nginx Proxy
+Manager 時預設即符合；平台以這兩個值確認登入流程從 OAuth callback 的同一個網址開始，
+否則瀏覽器不會送回登入狀態 cookie。
 
 `gridplusplus` 是 Compose 專案名稱與此服務在外部 network 上的固定別名，對應 `https://gridplusplus.ntuee.org/`。
 
@@ -285,9 +282,20 @@ docker network inspect nginx
    ```
 
 2. 已設定外層 nginx 時，再以實際網域開啟首頁與 `/docs`。
-3. 開啟首頁「帳號」，按下「前往 Gitea 登入」。
-4. 在 Gitea 完成登入及第一次授權，確認能回到平台並讀取帳號資料。
-5. 登出後再次登入，確認仍連結到同一個平台帳號與既有資料。
+3. 確認 `app` 能連到 Gitea，並已讀到 Gitea 自動產生的 OAuth 設定：
+
+   ```bash
+   docker compose exec app python -c "import urllib.request; print(urllib.request.urlopen('http://gridplusplus-git:3000/api/healthz', timeout=3).status)"
+   docker compose logs app | grep "Gitea OAuth"
+   ```
+
+   第一行應輸出 `200`；log 應出現 `Gitea OAuth configured`。
+4. 按下首頁右上角的「登入」，在 Gitea 完成登入及第一次授權，確認回到平台後右上角顯示帳號名稱。
+5. 點擊帳號名稱開啟「帳號與收藏」；登出後再次登入，確認仍連結到同一個平台帳號與既有資料。
+
+登入失敗時，頁面會顯示原因，`docker compose logs app` 會記錄 Gitea 回傳的錯誤
+（例如 `invalid_client`、連線失敗）。Gitea 重新產生 OAuth 憑證後，平台會在下一次登入時
+自動讀取新憑證，不需重新啟動。
 
 平台不提供自行註冊或密碼登入；帳號生命週期一律由 Gitea 管理。
 

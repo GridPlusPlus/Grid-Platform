@@ -88,9 +88,24 @@ function setSession(token, userId, email) {
 }
 
 function renderSession() {
-  $("#session-label").textContent = state.token ? state.email || "已登入" : "未登入";
-  $("#logout-button").classList.toggle("hidden", !state.token);
+  const signedIn = Boolean(state.token);
+  const label = state.me?.username || state.email || "我的帳號";
+  $("#session-label").textContent = signedIn ? label : "";
+  $("#account-button").title = signedIn ? `${label}：帳號與收藏` : "帳號與收藏";
+  $("#login-button").classList.toggle("hidden", signedIn);
+  $("#account-button").classList.toggle("hidden", !signedIn);
+  $("#logout-button").classList.toggle("hidden", !signedIn);
 }
+
+const AUTH_ERROR_MESSAGES = {
+  GITEA_OAUTH_DENIED: "已取消 Gitea 授權，登入未完成",
+  GITEA_OAUTH_STATE_INVALID: "登入逾時或狀態不符，請再按一次「登入」",
+  GITEA_OAUTH_UNAVAILABLE: "目前無法連線至 Gitea 登入服務，請稍後再試",
+  GITEA_OAUTH_REJECTED: "Gitea 拒絕了此次登入請求，請再試一次；若持續發生請聯絡管理員",
+  GITEA_OAUTH_INVALID_RESPONSE: "Gitea 登入服務回傳了無效資料，請聯絡管理員",
+  GITEA_OAUTH_NOT_CONFIGURED: "Gitea 登入尚未設定完成，請聯絡管理員",
+  GITEA_ACCOUNT_CONFLICT: "Gitea 帳號與既有平台帳號衝突，請聯絡管理員",
+};
 
 function renderAccountAuthState() {
   $("#account-login").classList.toggle("hidden", Boolean(state.token));
@@ -138,8 +153,8 @@ async function api(path, options = {}, protectedRequest = false) {
 }
 
 function switchView(viewName) {
-  const primaryView = viewName === "register" ? "account" : viewName;
-  $$(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.view === primaryView));
+  $$(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.view === viewName));
+  $("#account-button").classList.toggle("active", viewName === "account");
   $$(".view").forEach((view) => view.classList.toggle("active", view.id === `${viewName}-view`));
   if (viewName === "sprites") loadSprites();
   if (viewName === "packs") loadPacks();
@@ -396,6 +411,7 @@ async function loadAccountDashboard() {
   if (!state.token) return;
   try {
     state.me = await api("/users/me", {}, true);
+    renderSession();
     $("#profile-email").value = state.me.email;
     const usernameInput = $("#profile-username");
     if (usernameInput.dataset.dirty !== "true") {
@@ -1179,6 +1195,7 @@ async function openPackEditor(packId = null) {
 
 // Wire page navigation and dialog controls.
 $$(".tab").forEach((tab) => tab.addEventListener("click", () => switchView(tab.dataset.view)));
+$("#account-button").addEventListener("click", () => switchView("account"));
 $$(".close-dialog").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
 $$(".account-tab").forEach((tab) => {
   tab.addEventListener("click", () => switchAccountSection(tab.dataset.accountView));
@@ -1330,6 +1347,7 @@ $("#logout-button").addEventListener("click", async () => {
     state.favoriteFolders = [];
     state.activeFavoriteFolderId = null;
     setSession(null, null, null);
+    if ($("#account-view").classList.contains("active")) switchView("sprites");
   }
 });
 
@@ -1347,6 +1365,7 @@ $("#profile-form").addEventListener("submit", async (event) => {
     );
     $("#profile-username").value = state.me.username;
     $("#profile-username").dataset.dirty = "false";
+    renderSession();
     notify("暱稱已更新");
     loadSprites();
     loadMySprites();
@@ -1503,5 +1522,12 @@ if (oauthToken) {
       notify(error.message, true);
     });
 } else if (oauthError) {
-  notify("Gitea 登入未完成，請再試一次", true);
+  notify(AUTH_ERROR_MESSAGES[oauthError] || "Gitea 登入未完成，請再試一次", true);
+} else if (state.token) {
+  api("/users/me", {}, true)
+    .then((me) => {
+      state.me = me;
+      renderSession();
+    })
+    .catch(() => {});
 }
