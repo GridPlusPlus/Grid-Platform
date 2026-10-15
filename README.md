@@ -197,11 +197,10 @@ docker network inspect nginx
 
 3. 編輯 `.env`，將產生的值填入 `JWT_SECRET`，不要將 `.env` 提交到版本庫。
 
-4. 先部署 Gitea repo，確認 `oauth-init` 成功且外部 volume 已建立：
-
-   ```bash
-   docker volume inspect grid_oauth_config
-   ```
+4. 本服務與 Gitea repo 不需要依特定順序部署。共用的 `grid_oauth_config` volume
+   由先部署的一方建立；後部署的一方會沿用它，Compose 可能提示該 volume 由另一個
+   專案建立，屬正常現象。Gitea 尚未部署時，本服務仍會正常啟動，只有登入會顯示
+   「Gitea 登入尚未設定完成」；Gitea 的 `oauth-init` 寫入憑證後即可登入，不需重啟。
 
 5. Compose 一律把 `app` 與前端 `nginx` 接上外部 network（預設名稱 `nginx`，與 Gitea
    相同）。`app` 必須在這張 network 上，才能以 `http://gridplusplus-git:3000` 向 Gitea
@@ -230,9 +229,12 @@ docker network inspect nginx
 
    ```nginx
    client_max_body_size 6m;
+   # 執行期才解析 gridplusplus，本服務尚未部署或重建時，外層 nginx 仍可啟動與 reload。
+   resolver 127.0.0.11 valid=10s ipv6=off;
 
    location / {
-       proxy_pass http://gridplusplus:80;
+       set $gridplusplus_upstream http://gridplusplus:80;
+       proxy_pass $gridplusplus_upstream;
        proxy_set_header Host $host;
        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
        proxy_set_header X-Forwarded-Proto $scheme;
@@ -320,4 +322,5 @@ docker compose down
 docker compose down -v
 ```
 
-`docker compose down` 不會刪除外部 nginx network；`docker compose down -v` 會刪除本專案的 SQLite volume 與其中資料。
+`docker compose down` 不會刪除外部 nginx network；`docker compose down -v` 會刪除本專案的 SQLite volume 與其中資料，
+也會刪除與 Gitea 共用的 `grid_oauth_config`（之後在 Gitea repo 執行 `docker compose up -d` 即會重新產生）。

@@ -58,6 +58,8 @@ networks:
 
 volumes:
   grid_data:
+  # Shared with the Gitea deployment, which writes the OAuth credentials.
+  # Not external: whichever project is deployed first creates it, so the two
+  # can be deployed in any order.
   grid_oauth_config:
-    external: true
     name: grid_oauth_config
